@@ -7,8 +7,16 @@ import hashlib
 import io
 import json
 import os
+import sys
 
-from typing import List
+from typing import List, Union
+
+has_sftp = False
+try:
+    import paramiko
+    has_sftp = True
+except ImportError:
+    pass
 
 
 def hash_file(filename: str) -> str:
@@ -89,6 +97,50 @@ class FtpsConnection:
         self._ftp_client.delete(filename)
 
 
+class SftpConnection:
+    def __init__(self, host: str, user: str, password: str, allow_any_host_key: bool):
+        self._ssh_client = paramiko.SSHClient()
+        if allow_any_host_key:
+            self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self._ssh_client.connect(host, username=user, password=password)
+
+        self._sftp_client = self._ssh_client.open_sftp()
+
+    def download_file(self, filename: str) -> bytes:
+        with self._sftp_client.open(filename) as f:
+            return f.read()
+
+    def _exists(self, remote_path):
+        try:
+            self._sftp_client.stat(remote_path)
+            return True
+        except IOError:
+            return False
+
+    def ensure_directory_exists(self, directory):
+        path = ""
+        for path_part in split_path(directory):
+            path = os.path.join(path, path_part)
+            if not path:
+                continue
+
+            if not self._exists(path):
+                self._sftp_client.mkdir(path)
+
+    def upload_file(self, filename: str, remote_filename: str):
+        self.ensure_directory_exists(os.path.dirname(remote_filename))
+        self._sftp_client.put(filename, remote_filename)
+
+    def upload_data(self, data: bytes, remote_filename: str):
+        self.ensure_directory_exists(os.path.dirname(remote_filename))
+
+        buffer = io.BytesIO(data)
+        self._sftp_client.putfo(buffer, remote_filename)
+
+    def delete_file(self, filename: str):
+        self._sftp_client.remove(filename)
+
+
 class IndexFile:
     def __init__(self, data: bytes = None):
         self._file_hashes = {}
@@ -121,7 +173,7 @@ class IndexFile:
 
 
 def synchronize(
-    connection: FtpsConnection,
+    connection: Union[FtpsConnection, SftpConnection],
     sync_directory: str,
     remote_directory: str,
     index_file: str,
@@ -133,7 +185,7 @@ def synchronize(
     print("Download index file...")
     try:
         index_data = connection.download_file(index_file_path)
-    except ftplib.error_perm:
+    except (ftplib.error_perm, FileNotFoundError):
         index_data = None
         print("Downloading index failed. Using an empty index.")
 
@@ -198,6 +250,11 @@ def main():
     parser.add_argument("--host", required=True, help="FTP host")
     parser.add_argument("--user", required=True, help="FTP user")
     parser.add_argument("--password", required=True, help="FTP password")
+    parser.add_argument("--sftp", action="store_true", help="Connect using SFTP instead of FTPS")
+    parser.add_argument(
+        "--allow-any-host-key",
+        action="store_true",
+        help="Allow any host key when connecting to SFTP")
     parser.add_argument(
         "--delete-files",
         action="store_true",
@@ -229,7 +286,14 @@ def main():
 
     args = parser.parse_args()
 
-    connection = FtpsConnection(args.host, args.user, args.password)
+    if args.sftp:
+        if not has_sftp:
+            print("Please install paramiko to use SFTP")
+            sys.exit(1)
+
+        connection = SftpConnection(args.host, args.user, args.password, args.allow_any_host_key)
+    else:
+        connection = FtpsConnection(args.host, args.user, args.password)
     synchronize(
         connection,
         args.local_path,
