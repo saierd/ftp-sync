@@ -40,7 +40,7 @@ def split_path(path: str) -> List[str]:
     return parts
 
 
-class Connection:
+class FtpsConnection:
     def __init__(self, host: str, user: str, password: str):
         self._connect_ftp(host, user, password)
 
@@ -121,7 +121,7 @@ class IndexFile:
 
 
 def synchronize(
-    connection: Connection,
+    connection: FtpsConnection,
     sync_directory: str,
     remote_directory: str,
     index_file: str,
@@ -229,7 +229,7 @@ def main():
 
     args = parser.parse_args()
 
-    connection = Connection(args.host, args.user, args.password)
+    connection = FtpsConnection(args.host, args.user, args.password)
     synchronize(
         connection,
         args.local_path,
